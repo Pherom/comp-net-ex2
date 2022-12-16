@@ -8,9 +8,37 @@ using namespace std;
 
 #define TIME_PORT	27015
 
+enum Request {
+	TIME,
+	TIME_WITHOUT_DATE,
+	TIME_SINCE_EPOCH,
+	CLIENT_TO_SERVER_DELAY_ESTIMATION,
+	MEASURE_RTT,
+	TIME_WITHOUT_DATE_OR_SECONDS,
+	YEAR,
+	MONTH_AND_DAY,
+	SECONDS_SINCE_BEGINNING_OF_MONTH,
+	WEEK_OF_YEAR,
+	DAYLIGHT_SAVINGS,
+	TIME_WITHOUT_DATE_IN_CITY,
+	MEASURE_TIME_LAP,
+	PING
+};
+
+enum City {
+	NONE,
+	DOHA,
+	PRAGUE,
+	NEW_YORK,
+	BERLIN
+};
+
+time_t* timer_start = NULL;
+
+char* processRequest(SOCKET m_socket, const Request& request, sockaddr* client_addr, int* client_addr_len, const City& city = City::NONE);
+
 void main()
 {
-	// Initialize Winsock (Windows Sockets).
 
 	// Create a WSADATA object called wsaData.
 	// The WSADATA structure contains information about the Windows 
@@ -91,7 +119,6 @@ void main()
 	int client_addr_len = sizeof(client_addr);
 	int bytesSent = 0;
 	int bytesRecv = 0;
-	char sendBuff[255];
 	char recvBuff[255];
 
 	// Get client's requests and answer them.
@@ -117,31 +144,173 @@ void main()
 		recvBuff[bytesRecv] = '\0'; //add the null-terminating to make it a string
 		cout << "Time Server: Recieved: " << bytesRecv << " bytes of \"" << recvBuff << "\" message.\n";
 
-		// Answer client's request by the current time.
+		char* choiceStr = strtok(recvBuff, " ");
+		char* cityStr = NULL;
+		int choice = atoi(choiceStr);
+		City chosenCity = City::NONE;
 
-		// Get the current time.
-		time_t timer;
-		time(&timer);
-		// Parse the current time to printable string.
-		strcpy(sendBuff, ctime(&timer));
-		sendBuff[strlen(sendBuff) - 1] = '\0'; //to remove the new-line from the created string
+		if (choice == Request::TIME_WITHOUT_DATE_IN_CITY + 1) {
+			cityStr = strtok(NULL, " ");
+			for (int i = 0; cityStr[i]; i++) {
+				cityStr[i] = tolower(cityStr[i]);
+			}
 
-		// Sends the answer to the client, using the client address gathered
-		// by recvfrom. 
-		bytesSent = sendto(m_socket, sendBuff, (int)strlen(sendBuff), 0, (const sockaddr *)&client_addr, client_addr_len);
-		if (SOCKET_ERROR == bytesSent)
-		{
-			cout << "Time Server: Error at sendto(): " << WSAGetLastError() << endl;
-			closesocket(m_socket);
-			WSACleanup();
-			return;
+			if (strcmp(cityStr, "doha") == 0) {
+				chosenCity = DOHA;
+			}
+			else if (strcmp(cityStr, "prague") == 0) {
+				chosenCity = PRAGUE;
+			}
+			else if (strcmp(cityStr, "new york") == 0) {
+				chosenCity = NEW_YORK;
+			}
+			else if (strcmp(cityStr, "berlin") == 0) {
+				chosenCity = BERLIN;
+			}
 		}
 
-		cout << "Time Server: Sent: " << bytesSent << "\\" << strlen(sendBuff) << " bytes of \"" << sendBuff << "\" message.\n";
+		char* response;
+		response = processRequest(m_socket, Request(choice - 1), &client_addr, &client_addr_len, chosenCity);
+		if (response != NULL) {
+			response[strlen(response)] = '\0'; //to remove the new-line from the created string
+
+			// Sends the answer to the client, using the client address gathered
+			// by recvfrom. 
+			bytesSent = sendto(m_socket, response, (int)strlen(response), 0, (const sockaddr*)&client_addr, client_addr_len);
+
+			if (SOCKET_ERROR == bytesSent)
+			{
+				cout << "Time Server: Error at sendto(): " << WSAGetLastError() << endl;
+				delete response;
+				closesocket(m_socket);
+				WSACleanup();
+				return;
+			}
+
+			cout << "Time Server: Sent: " << bytesSent << "\\" << strlen(response) << " bytes of \"" << response << "\" message.\n";
+			delete response;
+		}
 	}
 
 	// Closing connections and Winsock.
 	cout << "Time Server: Closing Connection.\n";
 	closesocket(m_socket);
 	WSACleanup();
+}
+
+char* getTimeWithoutDateInCity(const time_t& now, const City& city = City::NONE) {
+	char* response = new char[255];
+	tm* t = gmtime(&now);
+	t->tm_isdst = -1;
+
+	switch (city) {
+	case City::DOHA:
+		t->tm_hour += 3;
+		break;
+	case City::PRAGUE:
+		t->tm_hour += 1;
+		break;
+	case City::NEW_YORK:
+		t->tm_hour -= 5;
+		break;
+	case City::BERLIN:
+		t->tm_hour += 1;
+		break;
+	}
+
+	mktime(t);
+	strftime(response, 255, "%H:%M:%S", t);
+	return response;
+}
+
+char* processRequest(SOCKET m_socket, const Request& request, sockaddr* client_addr, int* client_addr_len, const City& city) {
+	char* response = new char[255];
+	time_t now;
+	time(&now);
+
+	switch (request) {
+		case Request::TIME: {
+			strcpy(response, ctime(&now));
+			response[strlen(response) - 1] = '\0';
+			break;
+		}
+		case Request::TIME_WITHOUT_DATE: {
+			strftime(response, 255, "%H:%M:%S", localtime(&now));
+			break;
+		}
+		case Request::TIME_SINCE_EPOCH: {
+			sprintf(response, "%I64u", time(NULL));
+			break;
+		}
+		case Request::CLIENT_TO_SERVER_DELAY_ESTIMATION: {
+			sprintf(response, "%I64u", GetTickCount64());
+			break;
+		}
+		case Request::MEASURE_RTT: {
+			sprintf(response, "%I64u", GetTickCount64());
+			break;
+		}
+		case Request::TIME_WITHOUT_DATE_OR_SECONDS: {
+			strftime(response, 255, "%H:%M", localtime(&now));
+			break;
+		}
+		case Request::YEAR: {
+			strftime(response, 255, "%Y", localtime(&now));
+			break;
+		}
+		case Request::MONTH_AND_DAY: {
+			strftime(response, 255, "%d/%m", localtime(&now));
+			break;
+		}
+		case Request::SECONDS_SINCE_BEGINNING_OF_MONTH: {
+			tm time_maker = *localtime(&now);
+			time_maker.tm_mday = 1;
+			time_maker.tm_hour = 0;
+			time_maker.tm_min = 0;
+			time_maker.tm_sec = 0;
+			time_t time_of_month_start = mktime(&time_maker);
+			sprintf(response, "%.0f", floor(difftime(now, time_of_month_start)));
+			break;
+		}
+		case Request::WEEK_OF_YEAR: {
+			tm time_maker = *localtime(&now);
+			time_maker.tm_mon = 0;
+			time_maker.tm_mday = 1;
+			time_maker.tm_hour = 0;
+			time_maker.tm_min = 0;
+			time_maker.tm_sec = 0;
+			time_t time_of_year_start = mktime(&time_maker);
+			sprintf(response, "%.0f", floor(difftime(now, time_of_year_start) / 60 / 60 / 24 / 7));
+			break;
+		}
+		case Request::DAYLIGHT_SAVINGS: {
+			sprintf(response, "%d", localtime(&now)->tm_isdst);
+			break;
+		}
+		case Request::TIME_WITHOUT_DATE_IN_CITY: {
+			char* timeWithoutDateInCity = getTimeWithoutDateInCity(now, city);
+			strcpy(response, timeWithoutDateInCity);
+			delete[] timeWithoutDateInCity;
+			break;
+		}
+		case Request::MEASURE_TIME_LAP: {
+			if (timer_start == NULL || difftime(now, *timer_start) / 60 > 3) {
+				delete timer_start;
+				timer_start = new time_t(now);
+				strcpy(response, "Timer started! - Send another request to stop.");
+			}
+			else {
+				sprintf(response, "%.0f", difftime(now, *timer_start));
+				delete timer_start;
+				timer_start = NULL;
+			}
+			break;
+		}
+		case Request::PING: {
+			sprintf(response, "%I64u", GetTickCount64());
+			break;
+		}
+	}
+
+	return response;
 }
